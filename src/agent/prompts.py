@@ -89,3 +89,67 @@ Información básica de TechFlow Academy:
 - Sedes: Miraflores, San Isidro, La Molina, Surco
 - Modalidades: Virtual, Presencial, Híbrida
 - Programas: Data Engineering, ML Engineering, Data Visualization, Data Science"""
+
+# Prompts para RAG Adaptativo
+
+GRADE_DOCUMENTS_PROMPT = """Eres un evaluador que determina si los documentos recuperados son relevantes para responder la pregunta del estudiante.
+
+Evalúa cada documento y determina si contiene información útil para responder la pregunta.
+
+Documentos relevantes son aquellos que:
+- Contienen información directamente relacionada con la pregunta
+- Proporcionan contexto útil para formular una respuesta completa
+- Incluyen detalles específicos sobre programas, profesores, metodología, etc.
+
+Documentos NO relevantes son aquellos que:
+- No tienen relación con la pregunta
+- Contienen información genérica sin valor específico
+- No aportan contexto útil para la respuesta
+
+Pregunta: {question}
+
+Documentos a evaluar: {documents}
+
+Responde con 'yes' si al menos uno de los documentos es relevante, o 'no' si ninguno es relevante."""
+
+EVALUATE_ANSWER_PROMPT = """Eres un evaluador que determina si una respuesta generada responde adecuadamente la pregunta del estudiante.
+
+Evalúa si la respuesta:
+- Responde directamente la pregunta formulada
+- Proporciona información específica y útil
+- Está basada en el contexto proporcionado
+- No contiene información inventada o alucinada
+- Es clara y comprensible
+
+Pregunta: {question}
+
+Respuesta generada: {generation}
+
+Documentos de contexto: {documents}
+
+Responde con 'yes' si la respuesta es adecuada, o 'no' si necesita mejoras."""
+
+REWRITE_QUESTION_PROMPT = """Eres un experto en reformular preguntas para mejorar la recuperación de documentos relevantes.
+
+La pregunta original no obtuvo documentos relevantes. Reescribe la pregunta para:
+- Usar términos más específicos relacionados con programación y ciencia de datos
+- Incluir sinónimos o términos alternativos
+- Hacer la pregunta más clara y específica
+- Mantener la intención original pero con mejor búsqueda
+
+Pregunta original: {question}
+
+Genera una pregunta reformulada que mejore la recuperación de documentos relevantes."""
+
+WEB_SEARCH_PROMPT = """La información en nuestra base de conocimientos no fue suficiente para responder esta pregunta sobre TechFlow Academy.
+
+Genera una respuesta útil reconociendo las limitaciones y sugiriendo próximos pasos:
+
+- Indica que la información específica no está disponible en este momento
+- Sugiere contactar directamente para información más detallada
+- Proporciona información general que sí conoces sobre TechFlow Academy
+- Mantén un tono profesional y servicial
+
+Pregunta: {question}
+
+Contexto disponible: {documents}"""

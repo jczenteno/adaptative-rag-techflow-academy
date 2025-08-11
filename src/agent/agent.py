@@ -15,7 +15,10 @@ from src.agent.tools import (
     get_program_price,
 )
 from langgraph.prebuilt import ToolNode, tools_condition
-from src.agent.prompts import MODEL_SYSTEM_MESSAGE, COMPLEXITY_PROMPT, TOOL_ROUTER_PROMPT, SIMPLE_PROMPT, RAG_PROMPT, TOOL_PROMPT
+from src.agent.prompts import (
+    MODEL_SYSTEM_MESSAGE, COMPLEXITY_PROMPT, TOOL_ROUTER_PROMPT, SIMPLE_PROMPT, RAG_PROMPT, TOOL_PROMPT,
+    GRADE_DOCUMENTS_PROMPT, EVALUATE_ANSWER_PROMPT, REWRITE_QUESTION_PROMPT, WEB_SEARCH_PROMPT
+)
 from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 from langchain_openai import OpenAIEmbeddings
@@ -37,6 +40,18 @@ class ToolSelection(BaseModel):
     """Modelo para selección de herramientas"""
     tool_name: str
 
+class DocumentRelevance(BaseModel):
+    """Modelo para evaluación de relevancia de documentos"""
+    decision: str  # 'yes' o 'no'
+
+class AnswerEvaluation(BaseModel):
+    """Modelo para evaluación de calidad de respuesta"""
+    decision: str  # 'yes' o 'no'
+
+class QuestionRewrite(BaseModel):
+    """Modelo para re-escritura de preguntas"""
+    rewritten_question: str
+
 # Estado personalizado que extiende MessagesState
 class AdaptiveAgentState(TypedDict):
     """
@@ -45,6 +60,11 @@ class AdaptiveAgentState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
     complexity_level: Optional[str]
     retrieved_docs: Optional[List[Any]]
+    question: Optional[str]  # Pregunta actual (original o reformulada)
+    generation: Optional[str]  # Respuesta generada
+    answer_evaluation: Optional[str]  # Resultado de evaluación de la respuesta ('yes'/'no')
+    max_retries: Optional[int]  # Máximo número de reintentos
+    retry_count: Optional[int]  # Contador de reintentos
 
 class ChatbotGraph:
     def __init__(self, chat_model: BaseChatModel, checkpointer: _Any):
@@ -146,6 +166,25 @@ class ChatbotGraph:
             tool_router_prompt 
             | self.llm_json.with_structured_output(ToolSelection)
         )
+        
+        # RAG Adaptativo - Evaluadores
+        grade_docs_prompt = PromptTemplate(template=GRADE_DOCUMENTS_PROMPT, input_variables=["question", "documents"])
+        self.document_grader = (
+            grade_docs_prompt 
+            | self.llm_json.with_structured_output(DocumentRelevance)
+        )
+        
+        evaluate_answer_prompt = PromptTemplate(template=EVALUATE_ANSWER_PROMPT, input_variables=["question", "generation", "documents"])
+        self.answer_evaluator = (
+            evaluate_answer_prompt 
+            | self.llm_json.with_structured_output(AnswerEvaluation)
+        )
+        
+        rewrite_question_prompt = PromptTemplate(template=REWRITE_QUESTION_PROMPT, input_variables=["question"])
+        self.question_rewriter = (
+            rewrite_question_prompt 
+            | self.llm_json.with_structured_output(QuestionRewrite)
+        )
     
     def format_docs(self, docs):
         """Format documents for RAG context"""
@@ -195,16 +234,21 @@ class ChatbotGraph:
             """Retrieve documents for RAG"""
             logger.info("---RAG RETRIEVE---")
             
-            # Extraer la última pregunta
-            last_human_message = None
-            for msg in reversed(state["messages"]):
-                if isinstance(msg, HumanMessage):
-                    last_human_message = msg.content
-                    break
+            # Obtener la pregunta (original o reformulada)
+            question = state.get("question")
+            if not question:
+                # Extraer la última pregunta del usuario
+                for msg in reversed(state["messages"]):
+                    if isinstance(msg, HumanMessage):
+                        question = msg.content
+                        break
+            
+            if not question:
+                question = "información general"
             
             # Recuperar documentos
-            logger.info(f"Recuperando contexto de pregunta: {last_human_message}")
-            documents = self.retriever.get_relevant_documents(last_human_message)
+            logger.info(f"Recuperando contexto de pregunta: {question}")
+            documents = self.retriever.get_relevant_documents(question)
 
             logger.debug(f"[RAG] Docs recuperados: {len(documents)}")
             for i, doc in enumerate(documents):
@@ -212,10 +256,38 @@ class ChatbotGraph:
                 logger.debug(f"[{i}] {preview}")
                 logger.debug(f"    meta: {doc.metadata}")
 
-            # Retornar estado actualizado con documentos
+            # Retornar estado actualizado con documentos y pregunta
             return {
-                "retrieved_docs": documents
+                "retrieved_docs": documents,
+                "question": question,
+                "max_retries": state.get("max_retries", 3),
+                "retry_count": state.get("retry_count", 0)
             }
+        
+        def grade_documents(state: AdaptiveAgentState):
+            """Grade document relevance to question"""
+            logger.info("---GRADE DOCUMENTS---")
+            
+            question = state.get("question", "")
+            documents = state.get("retrieved_docs", [])
+            
+            if not documents:
+                logger.info("No documents to grade")
+                return {"retrieved_docs": []}
+            
+            # Formatear documentos para evaluación
+            docs_text = self.format_docs(documents)
+            
+            # Evaluar relevancia
+            result = self.document_grader.invoke({"question": question, "documents": docs_text})
+            logger.info(f"Document relevance: {result.decision}")
+            
+            if result.decision == "yes":
+                logger.info("Documents are relevant")
+                return {"retrieved_docs": documents}
+            else:
+                logger.info("Documents are not relevant")
+                return {"retrieved_docs": []}
         
         def rag_generate(state: AdaptiveAgentState):
             """Generate RAG response using full chat history + context"""
@@ -232,6 +304,72 @@ class ChatbotGraph:
             ] + self._get_last_messages(state)
 
             response = self.llm.invoke(messages_for_model)
+            
+            # Almacenar la respuesta generada para evaluación
+            return {
+                "messages": [response],
+                "generation": response.content
+            }
+        
+        def evaluate_answer(state: AdaptiveAgentState):
+            """Evaluate if the generated answer is adequate"""
+            logger.info("---EVALUATE ANSWER---")
+            
+            question = state.get("question", "")
+            generation = state.get("generation", "")
+            documents = state.get("retrieved_docs", [])
+            docs_text = self.format_docs(documents) if documents else ""
+            
+            # Evaluar la respuesta
+            result = self.answer_evaluator.invoke({
+                "question": question,
+                "generation": generation,
+                "documents": docs_text
+            })
+            
+            logger.info(f"Answer evaluation: {result.decision}")
+            return {
+                "generation": generation,
+                "answer_evaluation": result.decision  # Almacenar el resultado de la evaluación
+            }
+        
+        def rewrite_question(state: AdaptiveAgentState):
+            """Rewrite question to improve retrieval"""
+            logger.info("---REWRITE QUESTION---")
+            
+            original_question = state.get("question", "")
+            retry_count = state.get("retry_count", 0)
+            
+            # Re-escribir la pregunta
+            result = self.question_rewriter.invoke({"question": original_question})
+            rewritten_question = result.rewritten_question
+            
+            logger.info(f"Question rewritten: {original_question} -> {rewritten_question}")
+            
+            return {
+                "question": rewritten_question,
+                "retry_count": retry_count + 1,
+                "retrieved_docs": []  # Limpiar documentos para nueva búsqueda
+            }
+        
+        def web_search_fallback(state: AdaptiveAgentState):
+            """Fallback when RAG fails multiple times"""
+            logger.info("---WEB SEARCH FALLBACK---")
+            
+            question = state.get("question", "")
+            documents = state.get("retrieved_docs", [])
+            docs_text = self.format_docs(documents) if documents else ""
+            
+            # Generar respuesta de fallback
+            system_content = f"{WEB_SEARCH_PROMPT}"
+            prompt_template = PromptTemplate(
+                template=system_content + "\n\nPregunta: {question}\n\nContexto disponible: {documents}",
+                input_variables=["question", "documents"]
+            )
+            
+            chain = prompt_template | self.llm
+            response = chain.invoke({"question": question, "documents": docs_text})
+            
             return {"messages": [response]}
         
         def call_model_with_tools(state: AdaptiveAgentState):
@@ -251,6 +389,44 @@ class ChatbotGraph:
             complexity_level = state.get("complexity_level", "simple")
             logger.info(f"---ROUTE BY COMPLEXITY: {complexity_level}---")
             return complexity_level
+        
+        def decide_to_generate_or_rewrite(state: AdaptiveAgentState):
+            """Decide whether to generate answer or rewrite question based on document relevance"""
+            documents = state.get("retrieved_docs", [])
+            if documents:
+                logger.info("Documents are relevant, proceeding to generate")
+                return "generate"
+            else:
+                retry_count = state.get("retry_count", 0)
+                max_retries = state.get("max_retries", 3)
+                if retry_count < max_retries:
+                    logger.info(f"Documents not relevant, rewriting question (attempt {retry_count + 1}/{max_retries})")
+                    return "rewrite"
+                else:
+                    logger.info(f"Max retries reached ({max_retries}), using fallback")
+                    return "fallback"
+        
+        def decide_to_finish_or_rewrite(state: AdaptiveAgentState):
+            """Decide whether to finish or rewrite based on answer evaluation"""
+            answer_evaluation = state.get("answer_evaluation", "yes")
+            retry_count = state.get("retry_count", 0)
+            max_retries = state.get("max_retries", 3)
+            
+            logger.info(f"Answer evaluation decision: {answer_evaluation}")
+            
+            # Si la respuesta es buena, terminar
+            if answer_evaluation == "yes":
+                logger.info("Answer is adequate, finishing")
+                return "finish"
+            
+            # Si la respuesta no es buena y aún hay reintentos disponibles
+            if retry_count < max_retries:
+                logger.info(f"Answer needs improvement, rewriting question (attempt {retry_count + 1}/{max_retries})")
+                return "rewrite"
+            
+            # Si se alcanzó el máximo de reintentos, terminar de todas formas
+            logger.info(f"Max retries reached ({max_retries}), finishing with current answer")
+            return "finish"
 
         # Define the graph
         builder = StateGraph(AdaptiveAgentState)
@@ -258,8 +434,16 @@ class ChatbotGraph:
         # Add nodes
         builder.add_node("classify_complexity", classify_complexity)
         builder.add_node("simple_response", simple_response)
+        
+        # RAG adaptativo nodes
         builder.add_node("rag_retrieve", rag_retrieve)
+        builder.add_node("grade_documents", grade_documents)
         builder.add_node("rag_generate", rag_generate)
+        builder.add_node("evaluate_answer", evaluate_answer)
+        builder.add_node("rewrite_question", rewrite_question)
+        builder.add_node("web_search_fallback", web_search_fallback)
+        
+        # Tools nodes
         builder.add_node("call_model_with_tools", call_model_with_tools)
         builder.add_node(
             "tools",
@@ -283,9 +467,34 @@ class ChatbotGraph:
         # Simple path
         builder.add_edge("simple_response", END)
         
-        # RAG path
-        builder.add_edge("rag_retrieve", "rag_generate")
-        builder.add_edge("rag_generate", END)
+        # RAG adaptativo path
+        builder.add_edge("rag_retrieve", "grade_documents")
+        builder.add_conditional_edges(
+            "grade_documents",
+            decide_to_generate_or_rewrite,
+            {
+                "generate": "rag_generate",
+                "rewrite": "rewrite_question",
+                "fallback": "web_search_fallback"
+            }
+        )
+        
+        # Re-write loop
+        builder.add_edge("rewrite_question", "rag_retrieve")
+        
+        # Generate and evaluate
+        builder.add_edge("rag_generate", "evaluate_answer")
+        builder.add_conditional_edges(
+            "evaluate_answer",
+            decide_to_finish_or_rewrite,
+            {
+                "finish": END,
+                "rewrite": "rewrite_question"
+            }
+        )
+        
+        # Fallback path
+        builder.add_edge("web_search_fallback", END)
         
         # Tools path
         builder.add_conditional_edges(
@@ -295,8 +504,7 @@ class ChatbotGraph:
         )
         builder.add_edge("tools", "call_model_with_tools")
 
-        # Compile the graph con nombre estable para
-        # asegurar que se recupere el estado tras reinicios
+        # Se compila el grafo con nombre estable para asegurar que se recupere el estado tras reinicios
         graph_name = os.getenv("GRAPH_NAME", "chatbot_graph_v1")
         self.graph_name = graph_name
         return builder.compile(
@@ -312,7 +520,12 @@ class ChatbotGraph:
         initial_state = {
             "messages": input_messages,
             "complexity_level": None,
-            "retrieved_docs": None
+            "retrieved_docs": None,
+            "question": None,
+            "generation": None,
+            "answer_evaluation": None,
+            "max_retries": 3,
+            "retry_count": 0
         }
         
         result = self.graph.invoke(initial_state, config)
