@@ -363,3 +363,65 @@ Basado en el paper, esperamos:
 ---
 
 > 💡 **Nota**: Esta es una implementación de investigación/demo del paper Adaptive-RAG aplicado al dominio educativo. El objetivo es mostrar las ventajas del enfoque adaptativo en un caso de uso real con integración WhatsApp Business.
+
+```
+---
+config:
+  flowchart:
+    curve: linear
+  layout: dagre
+---
+flowchart TD
+    start(["\_\_start\_\_"]) --> classify_complexity("classify_complexity")
+    classify_complexity -.-> simple_response("simple_response") & rag_retrieve("rag_retrieve") & call_model_with_tools("call_model_with_tools")
+    
+    %% Simple path
+    simple_response --> tend(["\_\_end\_\_"])
+    
+    %% RAG Adaptativo path - Primera evaluación (documentos)
+    rag_retrieve --> grade_documents("grade_documents")
+    grade_documents -.-> rag_generate("rag_generate") & rewrite_question("rewrite_question") & web_search_fallback("web_search_fallback")
+    
+    %% Primer bucle de reescritura (documentos irrelevantes)
+    rewrite_question --> rag_retrieve
+    
+    %% Generar respuesta y segunda evaluación (calidad de respuesta)
+    rag_generate --> evaluate_answer("evaluate_answer")
+    evaluate_answer -.-> tend & rewrite_question
+    
+    %% Fallback path cuando documentos fallan repetidamente
+    web_search_fallback --> tend
+    
+    %% Tools path
+    call_model_with_tools -.-> tend & tools("tools")
+    tools --> call_model_with_tools
+    
+    %% Apply styles
+    classify_complexity:::default
+    simple_response:::default
+    rag_retrieve:::default
+    grade_documents:::default
+    rag_generate:::default
+    evaluate_answer:::default
+    rewrite_question:::default
+    web_search_fallback:::default
+    call_model_with_tools:::default
+    tools:::default
+    
+    classDef default fill:transparent ,stroke:#B388FF ,stroke-width:2px,color:#000000
+    classDef startClass fill:#000000,stroke:#B388FF ,stroke-width:2px,color:#000000
+    classDef tendClass fill:#BFB6FC ,stroke:#B388FF ,stroke-width:2px,color:#000000
+    
+    style start fill:#FFFFFF
+    style classify_complexity fill:#F3EEFF
+    style simple_response fill:#F3EEFF
+    style rag_retrieve fill:#F3EEFF
+    style grade_documents fill:#F3EEFF
+    style rag_generate fill:#F3EEFF
+    style evaluate_answer fill:#F3EEFF
+    style rewrite_question fill:#F3EEFF
+    style web_search_fallback fill:#F3EEFF
+    style call_model_with_tools fill:#F3EEFF
+    style tools fill:#F3EEFF
+    style tend fill:#bfb6fc
+```
