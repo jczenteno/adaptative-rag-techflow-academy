@@ -8,3 +8,8 @@ pydantic
 langchain-qdrant
 qdrant-client
 langchain-community
+psycopg[binary]
+psycopg-pool
+langgraph
+langgraph-checkpoint-postgres
+langchain-nvidia-ai-endpoints
