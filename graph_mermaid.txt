@@ -1,0 +1,38 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	classify_complexity(classify_complexity)
+	simple_response(simple_response)
+	rag_retrieve(rag_retrieve)
+	grade_documents(grade_documents)
+	rag_generate(rag_generate)
+	evaluate_answer(evaluate_answer)
+	rewrite_question(rewrite_question)
+	web_search_fallback(web_search_fallback)
+	call_model_with_tools(call_model_with_tools)
+	tools(tools)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> classify_complexity;
+	call_model_with_tools -.-> __end__;
+	call_model_with_tools -.-> tools;
+	classify_complexity -. &nbsp;tools&nbsp; .-> call_model_with_tools;
+	classify_complexity -. &nbsp;rag&nbsp; .-> rag_retrieve;
+	classify_complexity -. &nbsp;simple&nbsp; .-> simple_response;
+	evaluate_answer -. &nbsp;finish&nbsp; .-> classify_complexity;
+	evaluate_answer -. &nbsp;rewrite&nbsp; .-> rewrite_question;
+	grade_documents -. &nbsp;generate&nbsp; .-> rag_generate;
+	grade_documents -. &nbsp;rewrite&nbsp; .-> rewrite_question;
+	grade_documents -. &nbsp;fallback&nbsp; .-> web_search_fallback;
+	rag_generate --> evaluate_answer;
+	rag_retrieve --> grade_documents;
+	rewrite_question --> rag_retrieve;
+	tools --> call_model_with_tools;
+	simple_response --> __end__;
+	web_search_fallback --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc

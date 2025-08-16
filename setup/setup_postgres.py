@@ -9,6 +9,15 @@ from urllib.parse import urlparse, urlunparse
 from dotenv import load_dotenv
 
 
+def _build_admin_dsn(host: str, port: str, user: str, password: str, sslmode: str = "require") -> str:
+    """Construye DSN para conectarse a la base de datos admin 'postgres'.
+    
+    Esta función crea una conexión a la base de datos 'postgres' que existe
+    por defecto, para poder crear la base de datos objetivo.
+    """
+    return f"host={host} port={port} user={user} password={password} dbname=postgres sslmode={sslmode}"
+
+
 def _dsn_with_postgres_db(dsn: str) -> str:
     """Force DSN to connect to an existing admin DB ('postgres').
 
@@ -41,10 +50,27 @@ def _dsn_with_postgres_db(dsn: str) -> str:
 def main() -> int:
     load_dotenv()
 
-    dsn = os.getenv("POSTGRES_URL") or os.getenv("DATABASE_URL")
-    if not dsn:
-        print("ERROR: Falta la variable de entorno POSTGRES_URL o DATABASE_URL", file=sys.stderr)
+    # Leer credenciales individuales de variables de entorno
+    host = os.getenv("POSTGRES_HOST")
+    port = os.getenv("POSTGRES_PORT", "5432")
+    user = os.getenv("POSTGRES_USER")
+    password = os.getenv("POSTGRES_PASSWORD")
+    database = os.getenv("POSTGRES_NEON_DATABASE")
+    sslmode = os.getenv("POSTGRES_SSLMODE", "require")
+    
+    # Validar que tenemos las credenciales necesarias
+    if not all([host, user, password, database]):
+        missing = []
+        if not host: missing.append("POSTGRES_HOST")
+        if not user: missing.append("POSTGRES_USER")
+        if not password: missing.append("POSTGRES_PASSWORD")
+        if not database: missing.append("POSTGRES_NEON_DATABASE")
+        print(f"ERROR: Faltan variables de entorno: {', '.join(missing)}", file=sys.stderr)
         return 1
+    
+    # Construir DSN usando credenciales individuales
+    dsn = f"host={host} port={port} user={user} password={password} dbname={database} sslmode={sslmode}"
+    print(f"Conectando a la base de datos: {database}")
 
     sql_file = Path(__file__).with_name("tabla_programas.sql")
     if not sql_file.exists():
@@ -52,7 +78,7 @@ def main() -> int:
         return 1
 
     # Conectarse primero a 'postgres' para poder crear la BD objetivo y luego \connect
-    admin_dsn = _dsn_with_postgres_db(dsn)
+    admin_dsn = _build_admin_dsn(host, port, user, password, sslmode)
 
     cmd = [
         "psql",
